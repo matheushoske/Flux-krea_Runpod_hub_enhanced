@@ -1,105 +1,214 @@
-# Flux Krea for RunPod Serverless
+# Flux Krea RunPod Hub — Enhanced
+
 [한국어 README 보기](README_kr.md)
 
-This project is a template designed to easily deploy and use [Flux Krea](https://bfl.ai/blog/flux-1-krea-dev) in the RunPod Serverless environment.
+**Enhanced fork** of the [Flux-krea_Runpod_hub](https://github.com/wlsdml1114/Flux-krea_Runpod_hub) template by [wlsdml1114](https://github.com/wlsdml1114). It keeps the same RunPod Serverless + ComfyUI + Flux Krea stack, and adds API features that the upstream Hub template does not expose—most notably **image-to-image (img2img)** via an optional `image` field in the request.
 
-[![Runpod](https://api.runpod.io/badge/wlsdml1114/Flux-krea_Runpod_hub)](https://console.runpod.io/hub/wlsdml1114/Flux-krea_Runpod_hub)
+| | Upstream ([Flux-krea_Runpod_hub](https://github.com/wlsdml1114/Flux-krea_Runpod_hub)) | This repo (**Flux-krea_Runpod_hub_enhanced**) |
+| --- | --- | --- |
+| Text-to-image (txt2img) | Yes | Yes (unchanged API) |
+| Image-to-image (img2img) | No | **Yes** — `image` + optional `denoise` |
+| Input image formats | — | HTTP(S) URL, raw base64, `data:image/...;base64,...` |
+| LoRA (0–3) | Yes | Yes (unchanged) |
+| Custom UNET via Network Volume | Yes | Yes (unchanged) |
+| ComfyUI workflows | 4 JSON files (txt2img only) | Same 4 files; img2img nodes injected at runtime in `handler.py` |
 
-Flux Krea is an advanced AI model that generates high-quality images with creative text-to-image capabilities using the Flux architecture, with support for multiple LoRA (Low-Rank Adaptation) models.
+[![Runpod Hub (upstream)](https://api.runpod.io/badge/wlsdml1114/Flux-krea_Runpod_hub)](https://console.runpod.io/hub/wlsdml1114/Flux-krea_Runpod_hub)
 
+Deploy **this repository** if you need img2img. Deploy the upstream Hub template if you only need txt2img and want the official RunPod Hub listing.
 
-## 🎨 Engui Studio Integration
+[Flux Krea](https://bfl.ai/blog/flux-1-krea-dev) is a high-quality image model built on the Flux architecture. This worker wraps it in ComfyUI for RunPod Serverless.
+
+---
+
+## What this fork adds
+
+### 1. Image-to-image (`image` parameter)
+
+Send a **source image** together with your **prompt**. The worker transforms the image according to the text instead of starting from an empty latent (txt2img).
+
+- **Without `image`**: standard text-to-image (same behavior as upstream).
+- **With `image`**: image-to-image pipeline is enabled automatically.
+
+Supported `image` values:
+
+| Format | Example | Notes |
+| --- | --- | --- |
+| Public URL | `"https://example.com/photo.jpg"` | Downloaded inside the worker (60s timeout). |
+| Raw base64 | `"iVBORw0KGgo..."` | PNG/JPEG/GIF/WebP detected from file header. |
+| Data URI | `"data:image/png;base64,iVBORw0..."` | Prefix is stripped before decode. |
+| Local path | `"/path/on/worker/input.png"` | Only useful if the file already exists on the worker (e.g. Network Volume). |
+
+The worker then:
+
+1. Resolves the image to a temp file on disk.
+2. Waits for ComfyUI to be ready.
+3. Uploads the file to ComfyUI (`POST /upload/image`).
+4. Injects nodes into the active workflow: `LoadImage` → `ImageScale` → `VAEEncode`.
+5. Connects `VAEEncode` to `KSampler` and sets `denoise`.
+
+`width` and `height` still apply: the source image is scaled to those dimensions (Lanczos) before encoding.
+
+### 2. Controllable img2img strength (`denoise`)
+
+| Parameter | Required | Default | Range | When used |
+| --- | --- | --- | --- | --- |
+| `denoise` | No | `0.75` | `0.0` – `1.0` | Only when `image` is set |
+
+- **Lower** (e.g. `0.5`–`0.65`): keeps more of the original composition and layout.
+- **Higher** (e.g. `0.8`–`1.0`): follows the prompt more aggressively; closer to a full redraw.
+
+Ignored for plain txt2img requests (upstream uses `denoise: 1` in the workflow JSON).
+
+### 3. Clearer errors for image input
+
+Invalid URLs, corrupt base64, or failed ComfyUI uploads return structured errors, for example:
+
+```json
+{ "error": "Invalid input image: image must be a valid URL, base64 string, data URI, or an existing file path" }
+```
+
+```json
+{ "error": "Failed to upload input image: ..." }
+```
+
+---
+
+## Generation modes
+
+```mermaid
+flowchart LR
+  subgraph txt2img [Text-to-image - no image field]
+    P[prompt] --> CLIP[CLIP Text Encode]
+    E[EmptySD3LatentImage] --> KS[KSampler]
+    CLIP --> KS
+    KS --> OUT[Base64 image]
+  end
+
+  subgraph img2img [Image-to-image - image field set]
+    P2[prompt] --> CLIP2[CLIP Text Encode]
+    IMG[image URL or base64] --> LI[LoadImage]
+    LI --> SC[ImageScale]
+    SC --> VE[VAEEncode]
+    VE --> KS2[KSampler denoise less than 1]
+    CLIP2 --> KS2
+    KS2 --> OUT2[Base64 image]
+  end
+```
+
+**img2img works with LoRAs and custom models** — use the same `lora` and `model` fields as txt2img. The handler picks the workflow by LoRA count (0–3), then applies img2img wiring on top.
+
+---
+
+## ✨ Features (inherited + enhanced)
+
+* **Text-to-image**: High-quality images from text (Flux Krea + dual CLIP).
+* **Image-to-image** *(this fork)*: Transform an existing image using prompt + optional `denoise`.
+* **Multi-LoRA**: Up to 3 LoRAs; workflow JSON selected automatically.
+* **Custom UNET**: Override default model via Network Volume path.
+* **ComfyUI**: API-format workflows; img2img nodes added dynamically (no separate workflow files).
+
+## 🎨 Engui Studio (upstream ecosystem)
 
 [![EnguiStudio](https://raw.githubusercontent.com/wlsdml1114/Engui_Studio/main/assets/banner.png)](https://github.com/wlsdml1114/Engui_Studio)
 
-This InfiniteTalk template is primarily designed for **Engui Studio**, a comprehensive AI model management platform. While it can be used via API, Engui Studio provides enhanced features and broader model support.
+The original template was designed for **Engui Studio**. This fork remains API-compatible for txt2img and extends the API with `image` / `denoise`. Engui Studio integration is not maintained here unless you wire these fields yourself.
 
-**Engui Studio Benefits:**
-- **Expanded Model Support**: Access to a wider variety of AI models beyond what's available through API
-- **Enhanced User Interface**: Intuitive workflow management and model selection
-- **Advanced Features**: Additional tools and capabilities for AI model deployment
-- **Seamless Integration**: Optimized for Engui Studio's ecosystem
+---
 
-> **Note**: While this template works perfectly with API calls, Engui Studio users will have access to additional models and features that are planned for future releases.
+## 🚀 RunPod Serverless layout
 
-## ✨ Key Features
+| File | Role |
+| --- | --- |
+| `Dockerfile` | ComfyUI, Flux Krea weights, dependencies |
+| `handler.py` | Request parsing, img2img upload, workflow patching, ComfyUI API |
+| `entrypoint.sh` | Starts ComfyUI, then the RunPod handler |
+| `flux_krea_dev_api_*.json` | Base workflows for 0–3 LoRAs (txt2img) |
 
-*   **Text-to-Image Generation**: Creates high-quality images from text descriptions with advanced Flux architecture.
-*   **Multi-LoRA Support**: Supports up to 3 LoRA models simultaneously for enhanced customization.
-*   **Dynamic Model Loading**: Automatically selects appropriate workflow based on LoRA count (0-3 LoRAs).
-*   **Customizable Parameters**: Control image generation with various parameters including seed, guidance, width, height, and prompts.
-*   **ComfyUI Integration**: Built on top of ComfyUI for flexible workflow management.
-*   **Dual CLIP Support**: Enhanced text understanding with dual CLIP model integration.
+---
 
-## 🚀 RunPod Serverless Template
+## API reference
 
-This template includes all the necessary components to run Flux Krea as a RunPod Serverless Worker.
+### `input` fields
 
-*   **Dockerfile**: Configures the environment and installs all dependencies required for model execution.
-*   **handler.py**: Implements the handler function that processes requests for RunPod Serverless.
-*   **entrypoint.sh**: Performs initialization tasks when the worker starts.
-*   **Workflow JSONs**: Multiple workflow configurations for different LoRA combinations.
-
-### Input
-
-The `input` object must contain the following fields. All parameters except `model` and `lora` are required.
+All parameters except `model`, `lora`, `image`, and `denoise` are **required** for every job.
 
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `prompt` | `string` | **Yes** | `N/A` | Description text for the image to be generated. |
-| `seed` | `integer` | **Yes** | `N/A` | Random seed for image generation (affects output randomness). |
-| `guidance` | `float` | **Yes** | `N/A` | Guidance scale for controlling generation adherence to prompt. |
-| `width` | `integer` | **Yes** | `N/A` | Width of the output image in pixels. |
-| `height` | `integer` | **Yes** | `N/A` | Height of the output image in pixels. |
-| `model` | `string` | **No** | `flux1-krea-dev_fp8_scaled.safetensors` | Custom model path (requires Network Volume). |
-| `lora` | `array` | **No** | `[]` | Array of LoRA configurations as `[model_path, weight]` tuples (requires Network Volume). |
+| `prompt` | `string` | **Yes** | — | Text description for generation or transformation. |
+| `seed` | `integer` | **Yes** | — | Random seed. |
+| `guidance` | `float` | **Yes** | — | CFG / guidance scale (`cfg` on KSampler). Flux Krea often uses values around `1`. |
+| `width` | `integer` | **Yes** | — | Output width in pixels (also used to scale input image in img2img). |
+| `height` | `integer` | **Yes** | — | Output height in pixels. |
+| `model` | `string` | No | `flux1-krea-dev_fp8_scaled.safetensors` | Custom UNET path (Network Volume). |
+| `lora` | `array` | No | `[]` | List of `[path, weight]` pairs (Network Volume). Max 3. |
+| `image` | `string` | No | — | **Enhanced:** source image for img2img (URL, base64, or data URI). |
+| `denoise` | `float` | No | `0.75` | **Enhanced:** img2img strength; ignored without `image`. |
 
-**LoRA Configuration:**
-- Each LoRA entry should be an array with two elements: `[model_name, weight]`
-- `model_name`: Full path to the LoRA model file (e.g., `"/my_volume/loras/lora.safetensors"`)
-- `weight`: Strength/weight of the LoRA (typically between 0.0 and 2.0)
-- Maximum 3 LoRAs supported
-- If more than 3 LoRAs are provided, only the first 3 will be used
-- **Note**: Custom models and LoRAs require Network Volumes to be configured
+**LoRA entries:** `[ "/my_volume/loras/style.safetensors", 0.8 ]` — `weight` typically `0.0`–`2.0`. More than 3 LoRAs: only the first 3 are used.
 
-**Request Examples:**
+---
 
-**Basic Request (No LoRA):**
+### Request examples
+
+**Text-to-image (same as upstream):**
+
 ```json
 {
   "input": {
     "prompt": "a beautiful landscape with mountains and a lake",
     "seed": 12345,
-    "guidance": 7.5,
+    "guidance": 1,
     "width": 1024,
     "height": 1024
   }
 }
 ```
 
-**Request with Custom Model (Network Volume):**
+**Image-to-image — public URL:**
+
 ```json
 {
   "input": {
-    "prompt": "a beautiful landscape with mountains and a lake",
+    "prompt": "turn this photo into a watercolor painting, soft pastel colors",
     "seed": 12345,
-    "guidance": 7.5,
+    "guidance": 1,
     "width": 1024,
     "height": 1024,
-    "model": "/my_volume/models/custom_model.safetensors"
+    "image": "https://example.com/photo.jpg",
+    "denoise": 0.65
   }
 }
 ```
 
-**Request with Single LoRA (Network Volume):**
+**Image-to-image — base64 data URI:**
+
 ```json
 {
   "input": {
-    "prompt": "a beautiful landscape with mountains and a lake",
+    "prompt": "cyberpunk city at night, neon lights, rain",
     "seed": 12345,
-    "guidance": 7.5,
+    "guidance": 1,
     "width": 1024,
     "height": 1024,
+    "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+  }
+}
+```
+
+**Image-to-image + LoRA + custom model:**
+
+```json
+{
+  "input": {
+    "prompt": "anime style portrait, detailed eyes",
+    "seed": 42,
+    "guidance": 1,
+    "width": 1024,
+    "height": 1024,
+    "image": "https://example.com/portrait.jpg",
+    "denoise": 0.7,
+    "model": "/my_volume/models/custom_model.safetensors",
     "lora": [
       ["/my_volume/loras/style_lora.safetensors", 0.8]
     ]
@@ -107,126 +216,134 @@ The `input` object must contain the following fields. All parameters except `mod
 }
 ```
 
-**Request with Multiple LoRAs (Network Volume):**
+**Custom model / LoRA only (upstream-compatible):**
+
 ```json
 {
   "input": {
     "prompt": "a beautiful landscape with mountains and a lake",
     "seed": 12345,
-    "guidance": 7.5,
+    "guidance": 1,
     "width": 1024,
     "height": 1024,
     "model": "/my_volume/models/custom_model.safetensors",
     "lora": [
       ["/my_volume/loras/style_lora.safetensors", 0.8],
-      ["/my_volume/loras/character_lora.safetensors", 1.0],
-      ["/my_volume/loras/background_lora.safetensors", 0.5]
+      ["/my_volume/loras/character_lora.safetensors", 1.0]
     ]
   }
 }
 ```
 
+---
+
+### `denoise` tuning guide (img2img)
+
+| `denoise` | Typical use |
+| --- | --- |
+| `0.4` – `0.55` | Color grading, light style tweaks, preserve structure |
+| `0.6` – `0.75` | Style transfer, moderate prompt-driven changes (default `0.75`) |
+| `0.8` – `0.95` | Strong reinterpretation; only hints of original remain |
+| `1.0` | Near full regeneration from encoded latent (still not identical to txt2img) |
+
+Start at `0.65`–`0.75` and adjust per use case.
+
+---
+
 ### Output
 
-#### Success
+**Success**
 
-If the job is successful, it returns a JSON object with the generated image Base64 encoded.
-
-| Parameter | Type | Description |
+| Field | Type | Description |
 | --- | --- | --- |
-| `image` | `string` | Base64 encoded image file data. |
-
-**Success Response Example:**
+| `image` | `string` | Base64-encoded PNG (raw base64 string, no data-URI prefix required in response). |
 
 ```json
 {
-  "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+  "image": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 }
 ```
 
-#### Error
+**Error**
 
-If the job fails, it returns a JSON object containing an error message.
-
-| Parameter | Type | Description |
+| Field | Type | Description |
 | --- | --- | --- |
-| `error` | `string` | Description of the error that occurred. |
+| `error` | `string` | Human-readable failure reason. |
 
-**Error Response Example:**
+Examples: generation failure, invalid `image`, upload failure, ComfyUI connection timeout.
 
-```json
-{
-  "error": "이미지를 생성할 수 없습니다."
-}
-```
+---
 
-## 🛠️ Usage and API Reference
+## 🛠️ Deploy and call
 
-1.  Create a Serverless Endpoint on RunPod based on this repository.
-2.  Once the build is complete and the endpoint is active, submit jobs via HTTP POST requests according to the API Reference below.
+1. Create a RunPod Serverless endpoint from **this** Git repository (not only the upstream Hub listing unless you forked it there too).
+2. After the image build finishes, send jobs with `POST` to your endpoint URL and the `input` JSON above.
+3. Rebuild/redeploy after pulling changes to `handler.py` (img2img logic lives there, not in the static workflow JSON files).
 
-### 📁 Using Network Volumes
+### 📁 Network Volumes
 
-**Important**: Custom models and LoRAs are only applied when using Network Volumes. The default models are used when Network Volumes are not configured.
+Custom `model` and `lora` paths require a Network Volume mounted on the endpoint. Default weights are baked into the Docker image.
 
-Instead of directly transmitting Base64 encoded files, you can use RunPod's Network Volumes to handle large files. This is especially useful when dealing with large model files.
-
-1.  **Create and Connect Network Volume**: Create a Network Volume (e.g., S3-based volume) from the RunPod dashboard and connect it to your Serverless Endpoint settings.
-2.  **Upload Files**: Upload the model files and LoRA files you want to use to the created Network Volume.
-3.  **File Organization**: Organize your files in the following structure within the Network Volume:
-    - **Models**: Place custom model files in the `models/` folder
-    - **LoRAs**: Place LoRA files in the `loras/` folder
-4.  **Specify Paths**: When making an API request, specify the file paths within the Network Volume for `model` and LoRA names. For example:
-    - If the volume is mounted at `/my_volume` and you use `custom_model.safetensors`, the path would be `"/my_volume/models/custom_model.safetensors"`
-    - For LoRA files, use paths like `"/my_volume/loras/style_lora.safetensors"`
-
-**Example Network Volume Structure:**
 ```
 /my_volume/
 ├── models/
-│   ├── custom_model.safetensors
-│   └── another_model.safetensors
+│   └── custom_model.safetensors
 └── loras/
-    ├── style_lora.safetensors
-    ├── character_lora.safetensors
-    └── background_lora.safetensors
+    └── style_lora.safetensors
 ```
 
-## 🔧 Workflow Configuration
+Use full paths in requests, e.g. `"/my_volume/loras/style_lora.safetensors"`.
 
-This template includes the following workflow configurations:
+For **large** assets, prefer Network Volumes over huge base64 strings in `image`. For **one-off** img2img, URL or reasonably sized base64 is fine.
 
-*   **flux1_krea_dev_api_nolora.json**: Basic text-to-image generation without LoRA
-*   **flux1_krea_dev_api_1lora.json**: Text-to-image generation with 1 LoRA
-*   **flux1_krea_dev_api_2lora.json**: Text-to-image generation with 2 LoRAs
-*   **flux1_krea_dev_api_3lora.json**: Text-to-image generation with 3 LoRAs
+---
 
-The workflows are based on ComfyUI and include all necessary nodes for Flux Krea processing:
-- CLIP Text Encoding for prompts
-- Dual CLIP Loader for enhanced text understanding
-- VAE Loading and processing
-- UNET Loader with Flux Krea model
-- KSampler for image generation
-- LoRA Loader nodes (1-3 depending on configuration)
-- Image saving and output processing
+## 🔧 Workflows
 
-## 🎯 LoRA Usage Tips
+Static workflow files (txt2img base):
 
-1. **Weight Values**: Start with weights between 0.5-1.0 for most LoRAs. Higher values (1.0-2.0) create stronger effects, while lower values (0.1-0.5) create subtle effects.
+| File | LoRAs |
+| --- | --- |
+| `flux_krea_dev_api_nolora.json` | 0 |
+| `flux_krea_dev_api_1lora.json` | 1 |
+| `flux_krea_dev_api_2lora.json` | 2 |
+| `flux_krea_dev_api_3lora.json` | 3 |
 
-2. **LoRA Combinations**: When using multiple LoRAs, consider their compatibility. Some LoRAs work better together than others.
+When `image` is present, `handler.py` adds nodes **60** (`LoadImage`), **62** (`ImageScale`), and **61** (`VAEEncode`) and rewires node **31** (`KSampler`) `latent_image` and `denoise`.
 
-3. **Model Compatibility**: Ensure your LoRA models are compatible with the Flux Krea architecture.
+Core pipeline nodes (unchanged from upstream):
 
-4. **Performance**: More LoRAs may increase generation time and memory usage.
+- Dual CLIP loader, CLIP text encode, ConditioningZeroOut  
+- UNET loader (Flux Krea), VAE load/decode  
+- KSampler, SaveImage  
 
-## 🙏 Original Project
+---
 
-This project is based on the following original repository. All rights to the model and core logic belong to the original authors.
+## 🎯 LoRA tips
 
-*   **Flux Krea:** [https://bfl.ai/blog/flux-1-krea-dev](https://bfl.ai/blog/flux-1-krea-dev)
-*   **ComfyUI:** [https://github.com/comfyanonymous/ComfyUI](https://github.com/comfyanonymous/ComfyUI)
+1. Weights `0.5`–`1.0` are a good starting range.  
+2. Combine LoRAs carefully; not all stacks are compatible.  
+3. LoRAs must match Flux architecture.  
+4. More LoRAs → longer runs and higher VRAM.  
+5. LoRAs apply to **both** txt2img and img2img.
+
+---
+
+## 🙏 Credits and upstream
+
+| Project | Link |
+| --- | --- |
+| **Upstream template (fork base)** | [wlsdml1114/Flux-krea_Runpod_hub](https://github.com/wlsdml1114/Flux-krea_Runpod_hub) |
+| **RunPod Hub listing (upstream)** | [console.runpod.io/hub/wlsdml1114/Flux-krea_Runpod_hub](https://console.runpod.io/hub/wlsdml1114/Flux-krea_Runpod_hub) |
+| **Flux Krea model** | [bfl.ai – Flux.1 Krea dev](https://bfl.ai/blog/flux-1-krea-dev) |
+| **ComfyUI** | [comfyanonymous/ComfyUI](https://github.com/comfyanonymous/ComfyUI) |
+
+Model weights, Docker base image (`wlsdml1114/multitalk-base`), and core workflow design come from the upstream project. This enhanced repository only extends the **handler** and **documentation**; it does not replace upstream maintenance.
+
+If you use this fork, consider starring or linking the [original repository](https://github.com/wlsdml1114/Flux-krea_Runpod_hub) as the base implementation.
+
+---
 
 ## 📄 License
 
-The original Flux Krea project follows its respective license. This template also adheres to that license.
+Follows the same license terms as the upstream Flux Krea / ComfyUI template. See the upstream repository for details.
